@@ -1,23 +1,45 @@
-# PhD-SpeechWPM-Analysis
-Doctoral research code: Speech Rate (WPM) analysis with Whisper
-# PhD-SpeechWPM-Analysis
 
-This repository contains the code used in my doctoral research to analyze **speech rate (WPM)** using OpenAI's Whisper.
+# 📊 PhD Speech WPM Analysis
 
-## 📂 Project Structure
+This repository contains the Whisper-based speech rate analysis pipeline for PhD research on linguistic features in AI-scripted livestream micro-courses.
 
-- `2_whisper_wpm_analysis_batch1.py`: Script to batch transcribe and compute WPM for the first 179 audio clips
-- `speech_wpm_analysis.csv`: Output file containing filename, duration, transcription, and WPM
+---
 
-## 🛠 Requirements
+## ✅ Batch 1: Whisper WPM Analysis (179 Files)
 
-- Python 3.8+
-- openai-whisper
-- pandas
-- tqdm
+- 📅 Run Date: June 20, 2025  
+- 📂 Input Directory: `/content/drive/MyDrive/speech_wpm_clean344/speech-WPM`  
+- 🟢 Files Processed: 179  
+- 🧠 Model: `whisper base`  
+- 🔄 Output: `speech_wpm_analysis.csv`  
+- 📈 Output Fields:  
+  - `filename`  
+  - `duration` (seconds)  
+  - `text` (transcript)  
+  - `words` (word count)  
+  - `wpm` (words per minute)  
+- 💬 Notes:  
+  - Stable run with no errors.  
+  - Incremental processing handled in a second script.
 
-## 🚀 How to Use
+---
 
-```bash
-!pip install -q openai-whisper
-python 2_whisper_wpm_analysis_batch1.py
+## ✅ Batch 2: Whisper WPM Analysis (165 Files)
+
+- 📅 Run Date: June 20, 2025  
+- 📂 Input Directory: `/content/drive/MyDrive/speech_wpm_clean344/speech-WPM`  
+- 🟠 Files Processed: 165 (manually filtered)  
+- 🧠 Model: `whisper base`  
+- 🔄 Output: `speech_wpm_analysis_batch2.csv`  
+- 📈 Output Fields: same as Batch 1  
+- 💬 Notes:  
+  - Excluded already processed files  
+  - Processed on Google Colab Pro with A100  
+  - Ready to merge with Batch 1 for full dataset
+
+---
+
+## 📌 Next Step
+
+- Merge batch outputs → `speech_wpm_full.csv`  
+- Proceed to WPM-based analysis → explore relations with engagement & sales

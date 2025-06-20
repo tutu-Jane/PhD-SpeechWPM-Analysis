@@ -1,0 +1,41 @@
+
+==============================
+📁 Speech Rate Analysis - Merge Log
+==============================
+
+🗓️ Date: June 20, 2025
+🧑‍💻 Researcher: Jie Gao (PhD Project)
+📄 Task: Merging WPM Analysis Results
+
+------------------------------
+🔧 Description of Operation:
+Merged two CSV files generated from Whisper-based speech-to-text and speech rate (WPM) analysis.
+
+1️⃣ File 1: `speech_wpm_analysis.csv` (Batch 1 - 179 files)
+2️⃣ File 2: `speech_wpm_analysis_batch2.csv` (Batch 2 - 165 files)
+
+✅ Output File: `speech_wpm_full.csv`
+📊 Total Records: 344
+
+------------------------------
+📁 File Path:
+All source files and output stored in:
+`/content/drive/MyDrive/speech_wpm_clean344/speech-WPM/`
+
+------------------------------
+📈 Output Fields:
+- filename: Name of the audio file
+- duration: Duration of the clip in seconds
+- text: Transcribed text (via Whisper base)
+- words: Number of words transcribed
+- wpm: Words per minute (speech rate)
+
+🧠 Whisper Model Used: `base`
+
+------------------------------
+📝 Notes:
+- Duplicate entries were avoided based on filename.
+- Batch 2 was filtered to exclude Batch 1 files before merging.
+- Final dataset ready for statistical modeling and correlation analysis.
+
+==============================
