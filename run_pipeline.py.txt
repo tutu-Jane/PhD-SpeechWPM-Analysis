@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+run_pipeline.py  (TXT-distributed)
+One-click pipeline for the speech-rate live-stream study.
+
+WHAT THIS DOES (high level):
+1) Ingest session manifest (exported from your authorized sources) -> sessions.csv
+2) Deduplicate to 1 session per creator -> sessions_dedup.csv
+3) QC: file existence + basic audio RMS check -> sessions_qc.csv
+4) Extract key 5-min segments and concatenate into a standardized 15-min analytical clip -> analytic_clips/
+5) Extract audio from analytical clips -> wav
+6) Transcribe analytical clips with Whisper -> JSON/TXT transcripts
+7) Compute CPM + English proportion from transcripts
+8) Compute CE/AE engagement indices from platform analytics (z-score then average)
+9) Build final model table (Ln(x+1), mean-center CPM, CPM^2, etc.)
+10) Export descriptives/correlations
+
+IMPORTANT:
+- This script assumes you already have *legally obtained* local video files (or locally saved recordings)
+  referenced in your manifest (video_path).
+- It does NOT implement platform bypassing, login automation, or unauthorized scraping.
+"""
+
+from __future__ import annotations
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+import pandas as pd
+import yaml
+
+
+def run(cmd: list[str]) -> None:
+    """Run a command and raise if it fails."""
+    print("\n$", " ".join(cmd))
+    subprocess.check_call(cmd)
+
+
+def ensure_dir(p: Path) -> None:
+    p.mkdir(parents=True, exist_ok=True)
+
+
+def load_cfg(cfg_path: str) -> dict:
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def merge_sales_ts(sessions_csv: Path, sales_ts_csv: Path, out_csv: Path) -> None:
+    """Merge sales_start_sec into session table for cutting the sales-phase clip."""
+    df = pd.read_csv(sessions_csv)
+    ts = pd.read_csv(sales_ts_csv)
+    if "session_id" not in ts.columns or "sales_start_sec" not in ts.columns:
+        raise ValueError("sales_ts file must have columns: session_id, sales_start_sec")
+    out = df.merge(ts[["session_id", "sales_start_sec"]], on="session_id", how="left")
+    missing = out["sales_start_sec"].isna().sum()
+    if missing > 0:
+        example = out.loc[out["sales_start_sec"].isna(), "session_id"].head(10).tolist()
+        raise ValueError(
+            f"Missing sales_start_sec for {missing} sessions. Examples: {example}"
+        )
+    out.to_csv(out_csv, index=False, encoding="utf-8-sig")
+    print(f"Merged sales timestamps -> {out_csv}")
+
+
+def build_clip_manifest(from_sessions_csv: Path, out_csv: Path) -> None:
+    """
+    Create a manifest for analytical clips so downstream audio extraction/transcription
+    runs in an isolated folder (avoids overwriting earlier intermediate files).
+    """
+    df = pd.read_csv(from_sessions_csv)
+    if "analytic_clip_path" not in df.columns:
+        raise ValueError("Expected column analytic_clip_path. Did you run clip extraction?")
+
+    out = df.copy()
+    out["video_path"] = out["analytic_clip_path"]
+    out["qc_pass"] = True
+    out["qc_reason"] = ""
+
+    ensure_dir(out_csv.parent)
+    out.to_csv(out_csv, index=False, encoding="utf-8-sig")
+    print(f"Built clip manifest -> {out_csv}")
+
+
+def merge_cpm_back(original_csv: Path, cpm_csv: Path, out_csv: Path) -> None:
+    """
+    Merge CPM/English proportion from clip ASR back into the session table.
+    """
+    base = pd.read_csv(original_csv)
+    cpm = pd.read_csv(cpm_csv)
+    need = ["session_id", "cpm", "English Utterance Proportion"]
+    for col in need:
+        if col not in cpm.columns:
+            raise ValueError(f"CPM table missing column: {col}")
+    out = base.merge(cpm[need], on="session_id", how="left")
+    if out["cpm"].isna().any():
+        missing = out.loc[out["cpm"].isna(), "session_id"].head(10).tolist()
+        raise ValueError(f"Missing CPM for some sessions. Examples: {missing}")
+    out.to_csv(out_csv, index=False, encoding="utf-8-sig")
+    print(f"Merged CPM back -> {out_csv}")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", default="configs/config.yaml", help="Path to config.yaml")
+    ap.add_argument("--manifest", required=True, help="Input session manifest (csv/xlsx) exported from authorized source")
+    ap.add_argument("--sales_ts", required=True, help="CSV with session_id,sales_start_sec (small-yellow-car activation time in seconds)")
+    ap.add_argument("--dedup_key", default="creator_id", help="Deduplicate key (default: creator_id)")
+    args = ap.parse_args()
+
+    cfg = load_cfg(args.config)
+    paths = cfg.get("paths", {})
+    raw_dir = Path(paths.get("raw_video_dir", "data_raw"))
+    inter_dir = Path(paths.get("intermediate_dir", "data_intermediate"))
+    final_dir = Path(paths.get("final_dir", "data_final"))
+
+    ensure_dir(raw_dir); ensure_dir(inter_dir); ensure_dir(final_dir)
+
+    # 0) Init (optional)
+    if Path("scripts/00_init_project.py").exists():
+        run([sys.executable, "scripts/00_init_project.py", "--config", args.config])
+
+    # 1) Ingest manifest -> sessions.csv
+    sessions_csv = inter_dir / "sessions.csv"
+    run([sys.executable, "scripts/01_ingest_session_manifest.py",
+         "--input", args.manifest,
+         "--output", str(sessions_csv)])
+
+    # 2) Deduplicate -> sessions_dedup.csv
+    dedup_csv = inter_dir / "sessions_dedup.csv"
+    run([sys.executable, "scripts/02_deduplicate_sessions.py",
+         "--input", str(sessions_csv),
+         "--output", str(dedup_csv),
+         "--key", args.dedup_key])
+
+    # 3) QC media/audio -> sessions_qc.csv
+    qc_csv = inter_dir / "sessions_qc.csv"
+    min_rms = float(cfg.get("quality", {}).get("min_audio_rms", 0.003))
+    run([sys.executable, "scripts/03_validate_media_and_audio.py",
+         "--input", str(dedup_csv),
+         "--output", str(qc_csv),
+         "--min_rms", str(min_rms)])
+
+    # 4) Merge sales timestamps for cutting sales-phase segment
+    qc_sales_csv = inter_dir / "sessions_qc_sales.csv"
+    merge_sales_ts(qc_csv, Path(args.sales_ts), qc_sales_csv)
+
+    # 5) Extract analytical clips -> sessions_with_clips.csv
+    run([sys.executable, "scripts/07_extract_analytic_clips.py",
+         "--sessions", str(qc_sales_csv),
+         "--out_dir", str(inter_dir / "clips")])
+
+    sessions_with_clips = inter_dir / "sessions_with_clips.csv"
+    if not sessions_with_clips.exists():
+        raise FileNotFoundError(f"Expected {sessions_with_clips} created by scripts/07_extract_analytic_clips.py")
+
+    # 6) Clip pipeline folder (isolated)
+    clip_pipe = inter_dir / "clip_pipeline"
+    ensure_dir(clip_pipe)
+    analytic_manifest = clip_pipe / "analytic_sessions.csv"
+    build_clip_manifest(sessions_with_clips, analytic_manifest)
+
+    # 7) Extract audio from analytical clips
+    run([sys.executable, "scripts/04_extract_audio.py",
+         "--input", str(analytic_manifest),
+         "--out_dir", str(clip_pipe / "audio_wav")])
+
+    sessions_with_audio = clip_pipe / "sessions_with_audio.csv"
+    if not sessions_with_audio.exists():
+        raise FileNotFoundError(f"Expected {sessions_with_audio} created by scripts/04_extract_audio.py")
+
+    # 8) Whisper transcription on analytical clip audio
+    wcfg = cfg.get("whisper", {})
+    run([sys.executable, "scripts/05_transcribe_whisper.py",
+         "--input", str(sessions_with_audio),
+         "--out_dir", str(clip_pipe / "asr_whisper"),
+         "--model", str(wcfg.get("model", "medium")),
+         "--language", str(wcfg.get("language", "zh")),
+         "--task", str(wcfg.get("task", "transcribe"))])
+
+    sessions_with_asr = clip_pipe / "sessions_with_asr.csv"
+    if not sessions_with_asr.exists():
+        raise FileNotFoundError(f"Expected {sessions_with_asr} created by scripts/05_transcribe_whisper.py")
+
+    # 9) Compute CPM + English proportion from analytical clip transcripts
+    cpm_csv = clip_pipe / "sessions_with_cpm.csv"
+    run([sys.executable, "scripts/08_compute_speech_rate_cpm.py",
+         "--input", str(sessions_with_asr),
+         "--output", str(cpm_csv)])
+
+    # 10) Merge CPM back into session table (to keep engagement/outcome columns)
+    merged_for_indices = clip_pipe / "sessions_for_indices.csv"
+    merge_cpm_back(sessions_with_clips, cpm_csv, merged_for_indices)
+
+    # 11) Compute engagement indices (CE/AE)
+    sessions_with_eng = clip_pipe / "sessions_with_engagement.csv"
+    run([sys.executable, "scripts/09_compute_engagement_indices.py",
+         "--input", str(merged_for_indices),
+         "--output", str(sessions_with_eng)])
+
+    # 12) Build final model table
+    model_table = final_dir / "model_table.csv"
+    run([sys.executable, "scripts/10_merge_model_table.py",
+         "--input", str(sessions_with_eng),
+         "--output", str(model_table)])
+
+    # 13) Export descriptives/correlations
+    run([sys.executable, "scripts/11_export_descriptives_tables.py",
+         "--input", str(model_table),
+         "--output", str(final_dir / "descriptives_and_corr.xlsx")])
+
+    print("\n✅ Pipeline completed.")
+    print(f"- Final model table: {model_table}")
+    print(f"- Descriptives/correlations: {final_dir / 'descriptives_and_corr.xlsx'}")
+
+
+if __name__ == "__main__":
+    main()
